@@ -10,6 +10,8 @@ omp is an agent harness. This project is a global omp extension: it registers ev
 - omp.
 - Claude Code or Claude Desktop 2.1.234 or newer, with cross-session messaging enabled.
 
+Windows is the tested platform. Claude Code also supports cross-session messaging on macOS and Linux, including Linux inside WSL 2, over Unix domain sockets with optional authentication. This extension implements the Windows named-pipe transport only, so it loads inert on other platforms. A POSIX transport is not implemented and is untested.
+
 ## Install
 
 Copy the extension and the skill into the omp global directories, then restart every omp session. A running session keeps the code it loaded at start.

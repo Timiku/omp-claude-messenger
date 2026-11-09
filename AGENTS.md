@@ -4,7 +4,7 @@ This repo is one global omp extension plus one skill. Both install into the user
 
 ## Install
 
-1. Check the prerequisites: Windows, omp on `PATH`, Claude Code or Claude Desktop 2.1.234 or newer. Done when `omp --version` prints a version.
+1. Check the prerequisites: Windows, omp on `PATH`, Claude Code or Claude Desktop 2.1.234 or newer. Done when `omp --version` prints a version. Linux and macOS are not implemented: the extension loads inert there.
 2. From the repo root in PowerShell, run `./deploy.ps1`. Done when it prints one `ext` line and one `skill` line, and these paths exist:
    - `%USERPROFILE%\.omp\agent\extensions\omp-claude-messenger.ts`
    - `%USERPROFILE%\.agents\skills\omp-claude-messenger\SKILL.md`
