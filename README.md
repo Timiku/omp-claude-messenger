@@ -4,8 +4,6 @@ Message live Claude Code sessions from an omp session, and receive their replies
 
 omp is an agent harness. This project is a global omp extension: it registers every omp session as a peer on Claude Code's cross-session messaging protocol, so an omp session can list running Claude sessions, send to one, and get the answer back as a normal message.
 
-omp to omp messaging is a separate project, `omp-cross-session-messenger`.
-
 ## Requirements
 
 - Windows.
@@ -26,6 +24,8 @@ Copy the extension and the skill into the omp global directories, then restart e
 ```powershell
 ./deploy.ps1
 ```
+
+An agent can follow `AGENTS.md` for the same steps with checks.
 
 ## Tools
 

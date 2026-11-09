@@ -20,7 +20,7 @@
  * Config:  ~/.omp/agent/omp-claude-messenger.json
  *            { "inbound": "accept"|"hold"|"refuse", "ctxLimit": 200000, "confirmNewTargets": false }
  *
- * Standalone from omp-cross-session-messenger. Windows only (Claude's key-file
+ * Self-contained: no other extension, script, or background job is needed. Windows only (Claude's key-file
  * scheme). Env OMP_CLAUDE_SESSIONS_DIR overrides ~/.claude/sessions (testing).
  */
 

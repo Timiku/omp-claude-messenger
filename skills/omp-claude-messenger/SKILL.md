@@ -9,7 +9,7 @@ Talk to running Claude Code sessions (Claude Desktop / CLI) from omp. This is an
 
 **Windows only.** It speaks Claude Code's Windows cross-session protocol (named pipe `\.\pipe\LOCAL\cc-msg-<hex32>`). The extension is installed globally at `~/.omp/agent/extensions/omp-claude-messenger.ts` and loads in every omp session.
 
-For omp to omp messaging use the `omp-cross-session-messenger` extension (`peers_*` tools) instead.
+This extension covers omp to Claude messaging only.
 
 ## Tools
 
