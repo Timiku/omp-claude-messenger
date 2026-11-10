@@ -49,7 +49,7 @@ An agent can follow `AGENTS.md` for the same steps with checks.
 | Tool | Use |
 |---|---|
 | `claude_peers` | List live Claude sessions: name, pid, idle/busy, cwd, permission mode, context size. Run this first. |
-| `claude_send(to, text, mode?)` | Send a message. `to` is a pid, a session id, a name, or a unique part of a name. `mode` is `bypass` or `prompting`; omit it and the extension detects the mode. |
+| `claude_send(to, text, mode?)` | Send a message. `to` is a pid, a session id, a name, or a unique part of a name. `mode` is `bypass` or `prompting`; omit it and the extension reads the target transcript, or asks the user when the transcript has no mode line yet. |
 
 Commands for the user: `/claude-peers`, `/claude-status`.
 

@@ -887,7 +887,7 @@ Message: ${preview}`,
     name: 'claude_send',
     label: 'Claude Send',
     description:
-      'Send a message to a live Claude Code session (by pid or name; use claude_peers). It reads the message as from another session, not the user; keep it short and reference file paths instead of pasting content. The first message to each target needs the user\'s approval, and a very large target context triggers a user prompt. The from-mode is matched to the target automatically. Reports a delivery receipt, or UNVERIFIED when none arrives (do not blindly retry).',
+      'Send a message to a live Claude Code session (by pid or name; use claude_peers). It reads the message as from another session, not the user; keep it short and reference file paths instead of pasting content. The first message to each target needs the user\'s approval, and a very large target context triggers a user prompt. The from-mode comes from the target transcript; when that has no mode line yet, omp asks the user, or fails when it cannot ask, so pass mode explicitly then. Reports a delivery receipt, or UNVERIFIED when none arrives (do not blindly retry).',
     parameters: z.object({ to: z.string(), text: z.string(), mode: z.string().optional() }),
     async execute(_id: string, p: { to: string; text: string; mode?: string }, _signal: unknown, _onUpdate: unknown, ctx: any) {
       return sendToClaude(p, ctx ?? uiCtx);
