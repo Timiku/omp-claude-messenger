@@ -14,29 +14,35 @@ Windows is the tested platform. On macOS and Linux, Claude Code uses Unix domain
 
 ## Install
 
-Install the repo as an omp plugin. The package carries the extension and its skill together, so one install loads both:
+```
+omp plugin install github:Timiku/omp-claude-messenger
+```
+
+omp clones the repo into `~/.omp/plugins/node_modules/omp-claude-messenger` and records it in `omp-plugins.lock.json`. The package manifest loads `extensions/omp-claude-messenger.ts` and discovers `skills/omp-claude-messenger/SKILL.md` from the same root, so one install carries both. A bare extension file dropped into `~/.omp/agent/extensions/` cannot carry a skill; that is why the package form is used.
+
+Restart every omp session afterwards. A running session keeps the code it loaded at start.
+
+To uninstall:
 
 ```
+omp plugin uninstall omp-claude-messenger
+```
+
+### From a local checkout
+
+For development, link a checkout instead of installing from GitHub:
+
+```sh
 omp plugin link <path to this repo>
 ```
 
-The link registers the package under `~/.omp/plugins/node_modules/omp-claude-messenger` and in `omp-plugins.lock.json`. omp loads `extensions/omp-claude-messenger.ts` from the package manifest and discovers `skills/omp-claude-messenger/SKILL.md` from the same package root. A bare extension file dropped into `~/.omp/agent/extensions/` cannot carry a skill; that is why the package form is used.
-
-`deploy.ps1` links this folder, and removes an older bare-file install if it exists:
+`deploy.ps1` does that on Windows and removes an older bare-file install if it exists:
 
 ```powershell
 ./deploy.ps1
 ```
 
 An agent can follow `AGENTS.md` for the same steps with checks.
-
-On macOS and Linux:
-
-```sh
-omp plugin link "$PWD"
-```
-
-Restart every omp session afterwards. A running session keeps the code it loaded at start.
 
 ## Tools
 
