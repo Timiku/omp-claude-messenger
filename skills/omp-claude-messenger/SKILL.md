@@ -7,7 +7,7 @@ description: Message live Claude Code sessions from omp and receive their messag
 
 Talk to running Claude Code sessions (Claude Desktop / CLI) from omp. This is an omp extension, not a script: it needs no background task, no Python and no armed watcher.
 
-**Windows tested; macOS and Linux untested.** On Windows it speaks Claude Code's named-pipe protocol (`\.\pipe\LOCAL\cc-msg-<hex32>`); on macOS and Linux it uses a Unix socket at `/tmp/cc-socks-<uid>/<pid>.sock`. The extension is installed globally at `~/.omp/agent/extensions/omp-claude-messenger.ts` and loads in every omp session.
+**Windows tested; macOS and Linux untested.** On Windows it speaks Claude Code's named-pipe protocol (`\.\pipe\LOCAL\cc-msg-<hex32>`); on macOS and Linux it uses a Unix socket at `/tmp/cc-socks-<uid>/<pid>.sock`. The extension ships as an omp plugin package, linked from the repo into `~/.omp/plugins/node_modules/omp-claude-messenger`, with this skill at `skills/omp-claude-messenger/SKILL.md` beside it. It loads in every omp session.
 
 This extension covers omp to Claude messaging only.
 

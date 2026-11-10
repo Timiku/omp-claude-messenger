@@ -1,0 +1,10 @@
+{
+  "name": "omp-claude-messenger",
+  "version": "0.2.0",
+  "description": "omp extension package: message live Claude Code sessions and receive their replies.",
+  "private": true,
+  "license": "Apache-2.0",
+  "omp": {
+    "extensions": ["./extensions/omp-claude-messenger.ts"]
+  }
+}

@@ -14,14 +14,15 @@ Windows is the tested platform. On macOS and Linux, Claude Code uses Unix domain
 
 ## Install
 
-Copy the extension and the skill into the omp global directories, then restart every omp session. A running session keeps the code it loaded at start.
+Install the repo as an omp plugin. The package carries the extension and its skill together, so one install loads both:
 
 ```
-~/.omp/agent/extensions/omp-claude-messenger.ts
-~/.agents/skills/omp-claude-messenger/
+omp plugin link <path to this repo>
 ```
 
-`deploy.ps1` does the copy from this folder:
+The link registers the package under `~/.omp/plugins/node_modules/omp-claude-messenger` and in `omp-plugins.lock.json`. omp loads `extensions/omp-claude-messenger.ts` from the package manifest and discovers `skills/omp-claude-messenger/SKILL.md` from the same package root. A bare extension file dropped into `~/.omp/agent/extensions/` cannot carry a skill; that is why the package form is used.
+
+`deploy.ps1` links this folder, and removes an older bare-file install if it exists:
 
 ```powershell
 ./deploy.ps1
@@ -29,13 +30,13 @@ Copy the extension and the skill into the omp global directories, then restart e
 
 An agent can follow `AGENTS.md` for the same steps with checks.
 
-On macOS and Linux, copy by hand:
+On macOS and Linux:
 
 ```sh
-mkdir -p ~/.omp/agent/extensions ~/.agents/skills
-cp extensions/omp-claude-messenger.ts ~/.omp/agent/extensions/
-cp -R skills/omp-claude-messenger ~/.agents/skills/
+omp plugin link "$PWD"
 ```
+
+Restart every omp session afterwards. A running session keeps the code it loaded at start.
 
 ## Tools
 
