@@ -37,7 +37,7 @@ const SESSIONS_DIR = process.env.OMP_CLAUDE_SESSIONS_DIR ?? path.join(os.homedir
 const PLATFORM = process.env.OMP_CLAUDE_PLATFORM ?? process.platform;
 const IS_WIN = PLATFORM === 'win32';
 const IS_POSIX = PLATFORM === 'linux' || PLATFORM === 'darwin';
-const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
+const PROJECTS_DIR = process.env.OMP_CLAUDE_PROJECTS_DIR ?? path.join(os.homedir(), '.claude', 'projects');
 const CONFIG_FILE = path.join(os.homedir(), '.omp', 'agent', 'omp-claude-messenger.json');
 // Claude sessions we have seen, one entry per conversation (full title, folder, ids, last few pids),
 // shared by all omp sessions, so a stale pid / session id / old title can be matched back to the
@@ -81,6 +81,8 @@ interface Peer {
   hostSessionId?: string;
   pids: number[]; // newest first
   seenAt: number;
+  mode?: 'bypass' | 'prompting'; // last mode that worked, or that the transcript showed
+  modeAt?: number;
 }
 
 interface Api {
@@ -376,18 +378,45 @@ export default function ompClaudeMessenger(pi: Api) {
     for (const s of list) {
       if (!s.name) continue;
       const key = keyOf(s);
-      // Same title + folder under a new key is the same conversation: fold its history in.
-      for (const [k, p] of [...peers]) {
-        if (k !== key && (p.name ?? '').toLowerCase() === s.name.toLowerCase() && (p.cwd ?? '') === (s.cwd ?? '')) { peers.delete(k); mergePeer(peers, { ...p, key, seenAt: 0 }); dirty = true; }
-      }
       const o = peers.get(key);
+      // Same title + folder under a new key is the same conversation: fold its history in.
+      let inherited: Peer | undefined;
+      for (const [k, p] of [...peers]) {
+        if (k === key) continue;
+        if ((p.name ?? '').toLowerCase() !== s.name.toLowerCase() || (p.cwd ?? '') !== (s.cwd ?? '')) continue;
+        if (!inherited || p.seenAt > inherited.seenAt) inherited = p;
+        peers.delete(k); mergePeer(peers, { ...p, key, seenAt: 0 }); dirty = true;
+      }
       const pids = [s.pid, ...(o?.pids ?? []).filter(x => x !== s.pid)].slice(0, PEER_PIDS);
-      if (!o || o.name !== s.name || o.cwd !== s.cwd || o.sessionId !== s.sessionId || o.hostSessionId !== s.hostSessionId || o.pids[0] !== s.pid) dirty = true;
-      peers.set(key, { key, name: s.name, cwd: s.cwd, sessionId: s.sessionId, hostSessionId: s.hostSessionId, pids, seenAt: Date.now() });
+      const mode = o?.mode ?? inherited?.mode;
+      const modeAt = o?.modeAt ?? inherited?.modeAt;
+      if (!o || o.name !== s.name || o.cwd !== s.cwd || o.sessionId !== s.sessionId || o.hostSessionId !== s.hostSessionId || o.pids[0] !== s.pid || o.mode !== mode) dirty = true;
+      peers.set(key, { key, name: s.name, cwd: s.cwd, sessionId: s.sessionId, hostSessionId: s.hostSessionId, pids, seenAt: Date.now(), mode, modeAt });
     }
     if (dirty) savePeers();
   };
   for (const p of readPeers()) mergePeer(peers, p);
+
+  /** The stored record for this conversation: its own key first, else the same title and folder. */
+  const conversationOf = (s: Session): Peer | undefined => {
+    const own = peers.get(keyOf(s));
+    if (own?.mode) return own;
+    const name = (s.name ?? '').toLowerCase();
+    let best: Peer | undefined;
+    for (const p of peers.values()) {
+      if (!p.mode || (p.name ?? '').toLowerCase() !== name || (p.cwd ?? '') !== (s.cwd ?? '')) continue;
+      if (!best || p.seenAt > best.seenAt) best = p;
+    }
+    return best ?? own;
+  };
+  const storedMode = (s: Session): 'bypass' | 'prompting' | undefined => conversationOf(s)?.mode;
+  const rememberMode = (s: Session, mode: 'bypass' | 'prompting') => {
+    const p = conversationOf(s);
+    if (!p || p.mode === mode) return;
+    peers.set(p.key, { ...p, mode, modeAt: Date.now() });
+    savePeers();
+    log(`mode for "${p.name ?? s.name}" is now ${mode}`);
+  };
 
   // Claude authenticates senders against this file; if anything deletes it, messages are
   // accepted into Claude's outbox but never reach us. Restore it whenever we notice.
@@ -604,8 +633,9 @@ export default function ompClaudeMessenger(pi: Api) {
   /** One-line facts a user needs to pick a session: status, context size, mode, folder. */
   function describe(s: Session): string {
     const tokens = targetContextTokens(s);
-    const pm = targetPermissionMode(s);
-    const mode = pm ? `${pm}` : 'mode unknown';
+    const stored = storedMode(s);
+    const pm = stored ? null : targetPermissionMode(s);
+    const mode = stored ? `${stored} (remembered)` : pm ? `${pm}` : 'mode unknown';
     return `${s.name} (pid ${s.pid}) [${s.status ?? '?'}] ${s.cwd ?? ''} · ctx ${tokens ? `~${Math.round(tokens / 1000)}k` : '?'} · ${mode}`;
   }
 
@@ -723,27 +753,32 @@ Message: ${preview}`,
       else throw new Error(`context limit: ${label} is ~${k}k tokens; user chose not to send (or no UI). Ask the user to retarget or stop.`);
     }
 
-    // 3. mode: explicit override > transcript > ask the user
+    // 3. mode: explicit > remembered for this conversation > transcript > ask the user
     let mode: 'bypass' | 'prompting';
     let modeSource: string;
     if (p.mode === 'bypass' || p.mode === 'prompting') {
       mode = p.mode;
       modeSource = 'explicit';
     } else {
-      const pm = targetPermissionMode(target);
-      if (pm && pm !== 'plan') {
+      const stored = storedMode(target);
+      const pm = stored ? null : targetPermissionMode(target);
+      if (stored) {
+        mode = stored;
+        modeSource = 'remembered';
+      } else if (pm && pm !== 'plan') {
         mode = toFromMode(pm);
         modeSource = `transcript permissionMode=${pm}`;
       } else {
         const ans = await ask(
           ctx,
-          `Cannot determine the permission mode of ${label} (${pm ? 'plan mode is ambiguous' : 'no transcript data yet'}). A wrong guess is silently held on its side. What is its mode?`,
+          `Cannot determine the permission mode of ${label} (${pm ? 'plan mode is ambiguous' : 'no transcript data yet, and no earlier send is remembered'}). A wrong guess is silently held on its side. What is its mode?`,
           ['bypassPermissions (bypass)', 'default / acceptEdits / auto / dontAsk (prompting)'],
         );
-        if (!ans) throw new Error(`unknown permission mode for ${label}; pass mode="bypass" or "prompting" explicitly (ask the user: /status in that session shows it)`);
+        if (!ans) throw new Error(`unknown permission mode for ${label}; pass mode="bypass" or mode="prompting" explicitly (ask the user: /status in that session shows it)`);
         mode = ans.startsWith('bypass') ? 'bypass' : 'prompting';
         modeSource = 'user answer';
       }
+      if (modeSource !== 'remembered') rememberMode(target, mode); // evidence from the transcript or the user
     }
 
     const tok = IS_WIN ? (readPeerToken(target.pid) ?? '') : '';
@@ -772,6 +807,16 @@ Message: ${preview}`,
       verdict = verified
         ? 'Delivery VERIFIED: the message appears in the target transcript.'
         : 'Delivery NOT confirmed within 8s: it is not in the target transcript. It may be held for approval (mode mismatch or a different inbound policy), queued behind a running tool, or dropped. Do not auto-retry (a held message is delivered on approval, so a retry could duplicate it); ask the user or check the target.';
+    }
+    if (verified) {
+      rememberMode(target, mode); // the send landed: this mode works for the conversation
+    } else if (modeSource === 'remembered') {
+      const pm = targetPermissionMode(target);
+      if (pm && pm !== 'plan' && toFromMode(pm) !== mode) {
+        const now = toFromMode(pm);
+        rememberMode(target, now);
+        verdict += ` Its transcript now shows permissionMode=${pm} (${now}), so this message was likely held. Do not resend until the user confirms the mode.`;
+      }
     }
     return text(`Sent to ${label} as from-mode=${mode} (${modeSource}). ${verdict}`, { mode, modeSource, receipts: res.receipts, verified });
   }
@@ -863,11 +908,13 @@ Message: ${preview}`,
 
   function describePeers(): Array<{ s: Session; line: string }> {
     return claudeSessions(process.pid).map(s => {
-      const pm = targetPermissionMode(s);
+      const stored = storedMode(s);
+      const pm = stored ? null : targetPermissionMode(s);
       const ctxTok = targetContextTokens(s);
+      const mode = stored ? `${stored} (remembered)` : pm ? `${pm} (${toFromMode(pm)})` : '?';
       return {
         s,
-        line: `- ${s.name} (pid ${s.pid}) [${s.status ?? '?'}] ${s.cwd ?? ''} mode=${pm ?? '?'}${pm ? ` (${toFromMode(pm)})` : ''} ctx=${ctxTok ? `${Math.round(ctxTok / 1000)}k` : '?'}`,
+        line: `- ${s.name} (pid ${s.pid}) [${s.status ?? '?'}] ${s.cwd ?? ''} mode=${mode} ctx=${ctxTok ? `${Math.round(ctxTok / 1000)}k` : '?'}`,
       };
     });
   }
@@ -887,7 +934,7 @@ Message: ${preview}`,
     name: 'claude_send',
     label: 'Claude Send',
     description:
-      'Send a message to a live Claude Code session (by pid or name; use claude_peers). It reads the message as from another session, not the user; keep it short and reference file paths instead of pasting content. The first message to each target needs the user\'s approval, and a very large target context triggers a user prompt. The from-mode comes from the target transcript; when that has no mode line yet, omp asks the user, or fails when it cannot ask, so pass mode explicitly then. Reports a delivery receipt, or UNVERIFIED when none arrives (do not blindly retry).',
+      'Send a message to a live Claude Code session (by pid or name; use claude_peers). It reads the message as from another session, not the user; keep it short and reference file paths instead of pasting content. The first message to each target needs the user\'s approval, and a very large target context triggers a user prompt. The from-mode is the last one that worked for that conversation, else the target transcript; only when neither is known does omp ask the user, or fail when it cannot ask, so pass mode explicitly then. Reports a delivery receipt, or UNVERIFIED when none arrives (do not blindly retry).',
     parameters: z.object({ to: z.string(), text: z.string(), mode: z.string().optional() }),
     async execute(_id: string, p: { to: string; text: string; mode?: string }, _signal: unknown, _onUpdate: unknown, ctx: any) {
       return sendToClaude(p, ctx ?? uiCtx);

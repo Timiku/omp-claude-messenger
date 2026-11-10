@@ -49,7 +49,7 @@ An agent can follow `AGENTS.md` for the same steps with checks.
 | Tool | Use |
 |---|---|
 | `claude_peers` | List live Claude sessions: name, pid, idle/busy, cwd, permission mode, context size. Run this first. |
-| `claude_send(to, text, mode?)` | Send a message. `to` is a pid, a session id, a name, or a unique part of a name. `mode` is `bypass` or `prompting`; omit it and the extension reads the target transcript, or asks the user when the transcript has no mode line yet. |
+| `claude_send(to, text, mode?)` | Send a message. `to` is a pid, a session id, a name, or a unique part of a name. `mode` is `bypass` or `prompting`; omit it and the extension tries the last mode that worked for that conversation, then the target transcript, and asks the user only when neither is known. |
 
 Commands for the user: `/claude-peers`, `/claude-status`.
 
@@ -105,6 +105,8 @@ There is no blocking ask. Send the message and continue. The reply arrives on it
 
 `test/live.mjs` and `test/live2.mjs` drive a real omp in rpc mode against a live Claude session. They read `policy.txt` or `policy2.txt` and `cmd.jsonl` or `cmd2.jsonl` from the scratch directory, and write `O.out`, `O.err`, `ui.log` there.
 
+`test/mode.mts` drives mode resolution against fake pipes: the transcript supplies the mode, a verified send stores it, a restarted session with no mode line reuses the stored mode, and a session with neither stops and asks. It needs Windows named pipes.
+
 `test/posix.mts` exercises the Unix-socket path: registry entry, socket and key file, inbound with and without an auth frame, outbound to a fake Claude, symlink refusal, and socket cleanup on shutdown. It needs a real Linux or macOS host, because Node on Windows cannot bind an AF_UNIX socket. It proves the transport, not compatibility with a real Claude session.
 
 Environment:
@@ -116,6 +118,7 @@ Environment:
 | `OMP_TEST_SCRATCH` | `wo` / `wp` | Scratch directory for the live harnesses. |
 | `OMP_CLAUDE_PLATFORM` | `process.platform` | Forces `win32`, `linux` or `darwin` for the harnesses. |
 | `OMP_CLAUDE_SOCKET_DIR` | `/tmp/cc-socks-<uid>` | Socket directory for the POSIX harness. |
+| `OMP_CLAUDE_PROJECTS_DIR` | `~/.claude/projects` | Transcript root for the harnesses. |
 
 ## License
 
