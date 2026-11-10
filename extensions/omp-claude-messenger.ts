@@ -20,10 +20,13 @@
  * Config:  ~/.omp/agent/omp-claude-messenger.json
  *            { "inbound": "accept"|"hold"|"refuse", "ctxLimit": 200000, "confirmNewTargets": false }
  *
- * Self-contained: no other extension, script, or background job is needed. Windows only (Claude's key-file
- * scheme). Env OMP_CLAUDE_SESSIONS_DIR overrides ~/.claude/sessions (testing).
+ * Self-contained: no other extension, script, or background job is needed. Windows is the tested platform.
+ * Linux, WSL 2 and macOS use a Unix socket at /tmp/cc-socks-<uid>/<pid>.sock instead of the named pipe; that
+ * path is untested against a real Claude Code. Env for testing: OMP_CLAUDE_SESSIONS_DIR (~/.claude/sessions),
+ * OMP_CLAUDE_SOCKET_DIR (socket directory), OMP_CLAUDE_PLATFORM (win32|linux|darwin).
  */
 
+import { execFileSync } from 'node:child_process';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as net from 'node:net';
@@ -31,6 +34,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 const SESSIONS_DIR = process.env.OMP_CLAUDE_SESSIONS_DIR ?? path.join(os.homedir(), '.claude', 'sessions');
+const PLATFORM = process.env.OMP_CLAUDE_PLATFORM ?? process.platform;
+const IS_WIN = PLATFORM === 'win32';
+const IS_POSIX = PLATFORM === 'linux' || PLATFORM === 'darwin';
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 const CONFIG_FILE = path.join(os.homedir(), '.omp', 'agent', 'omp-claude-messenger.json');
 // Claude sessions we have seen, one entry per conversation (full title, folder, ids, last few pids),
@@ -131,6 +137,56 @@ function pidAlive(pid: number): boolean {
   }
 }
 
+// ---- platform identity (POSIX) ---------------------------------------------
+// Constants below come from Claude Code 2.1.284's bundle; none is verified on a real Linux/macOS Claude.
+
+/** Directory Claude accepts for inbox sockets: /tmp/cc-socks-<uid> (Termux: $PREFIX/tmp/cc-socks-<uid>). */
+function posixSocketDir(): string {
+  const override = process.env.OMP_CLAUDE_SOCKET_DIR;
+  if (override) return override;
+  const uid = process.getuid?.() ?? 0;
+  const prefix = process.env.PREFIX ?? '';
+  return prefix.includes('com.termux') ? path.join(prefix, 'tmp', `cc-socks-${uid}`) : `/tmp/cc-socks-${uid}`;
+}
+
+/** Create the socket directory (mode 0700) and refuse one we do not own or that is a symlink. */
+function prepareSocketDir(): string {
+  const dir = posixSocketDir();
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const st = fs.lstatSync(dir);
+  if (st.isSymbolicLink() || !st.isDirectory()) throw new Error(`${dir} is not a plain directory`);
+  if (process.getuid && st.uid !== process.getuid()) throw new Error(`${dir} is owned by another user`);
+  if ((st.mode & 0o077) !== 0) fs.chmodSync(dir, 0o700);
+  return dir;
+}
+
+/** Process start marker Claude compares to detect pid reuse: `ps -o lstart=`, C locale, UTC (Claude's own probe). */
+function posixProcStart(pid: number): string | undefined {
+  try {
+    const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+      env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' },
+      encoding: 'utf8',
+      timeout: 1000,
+    }).trim();
+    return out || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function ownPidDomain(): string {
+  if (IS_WIN) return `win32:${os.hostname().toLowerCase()}`;
+  if (PLATFORM !== 'linux') return 'win32';
+  let machineId = '';
+  let pidNs = '';
+  try { machineId = fs.readFileSync('/etc/machine-id', 'utf8').trim(); } catch { /* empty */ }
+  try { pidNs = fs.readlinkSync('/proc/self/ns/pid'); } catch { /* empty */ }
+  return `win32:${machineId}:${pidNs}`;
+}
+
+/** Registry socket path without the `uds:` display prefix. */
+const rawSocketPath = (p: string) => p.replace(/^uds:/i, '');
+
 // ---- claude registry -------------------------------------------------------
 
 function readSessions(): Session[] {
@@ -170,8 +226,8 @@ function readPeerToken(pid: number): string | null {
   return null;
 }
 
-function keyFileName(pid: number, pipeNameLocal: string): string {
-  const canonical = `\\\\.\\pipe\\${pipeNameLocal.toLowerCase()}`;
+/** `canonical` is the lower-cased \\.\pipe\ name on Windows, the resolved socket path on POSIX. */
+function keyFileName(pid: number, canonical: string): string {
   return `${pid}.${crypto.createHash('sha256').update(canonical, 'utf8').digest('hex')}.key`;
 }
 
@@ -241,11 +297,12 @@ function parseEnvelope(content: string): { attrs: Record<string, string>; body: 
   return { attrs, body: m[2].trim() };
 }
 
-function wrapEnvelope(fromName: string, mode: 'bypass' | 'prompting', body: string): string {
+function wrapEnvelope(fromName: string, mode: 'bypass' | 'prompting', body: string, fromAddr?: string): string {
   // Clean envelope: content must START with the opening tag; never nest.
   const safe = body.replace(/<\/?cross-session-message\b/gi, m => m.replace('<', '< '));
   const n = fromName.replace(/"/g, '');
-  return `<cross-session-message from="${n}" from-name="${n}" from-mode="${mode}">\n${safe}\n</cross-session-message>`;
+  const a = (fromAddr ?? fromName).replace(/"/g, '');
+  return `<cross-session-message from="${a}" from-name="${n}" from-mode="${mode}">\n${safe}\n</cross-session-message>`;
 }
 
 // ---- extension -------------------------------------------------------------
@@ -257,8 +314,8 @@ export default function ompClaudeMessenger(pi: Api) {
     log('inert: no pi.zod');
     return;
   }
-  if (process.platform !== 'win32') {
-    log('inert: Windows only');
+  if (!IS_WIN && !IS_POSIX) {
+    log(`inert: unsupported platform ${PLATFORM}`);
     return;
   }
   const g = globalThis as any;
@@ -275,7 +332,7 @@ export default function ompClaudeMessenger(pi: Api) {
   let pipeLocal = '';
   let pipeFull = '';
   let token = '';
-  let startFt = '';
+  let startFt: string | undefined = '';
   let sessionBody: Record<string, unknown> = {};
   const seen: string[] = [];
   const rate = new Map<string, number[]>();
@@ -334,9 +391,14 @@ export default function ompClaudeMessenger(pi: Api) {
 
   // Claude authenticates senders against this file; if anything deletes it, messages are
   // accepted into Claude's outbox but never reach us. Restore it whenever we notice.
+  const keyBody = () => JSON.stringify(
+    IS_WIN
+      ? { peerToken: token, procStartFt: startFt, pidDomain: ownPidDomain() }
+      : { peerToken: token, procStart: startFt, pidDomain: ownPidDomain() },
+  );
   const ensureKey = () => {
     if (!keyFile || !token || fs.existsSync(keyFile)) return;
-    fs.writeFileSync(keyFile, JSON.stringify({ peerToken: token, procStartFt: startFt, pidDomain: `win32:${os.hostname().toLowerCase()}` }));
+    fs.writeFileSync(keyFile, keyBody(), { mode: 0o600 });
     log('restored missing key file');
   };
 
@@ -351,7 +413,7 @@ export default function ompClaudeMessenger(pi: Api) {
   };
 
   const removeFiles = () => {
-    for (const f of [sessionFile, keyFile]) {
+    for (const f of [sessionFile, keyFile, IS_POSIX ? pipeFull : '']) {
       if (!f) continue;
       try {
         fs.unlinkSync(f);
@@ -367,6 +429,12 @@ export default function ompClaudeMessenger(pi: Api) {
       try {
         fs.unlinkSync(path.join(SESSIONS_DIR, `${s.pid}.json`));
       } catch { /* gone */ }
+      const sock = IS_POSIX && s.messagingSocketPath ? rawSocketPath(s.messagingSocketPath) : '';
+      if (sock && path.dirname(sock) === posixSocketDir()) {
+        try {
+          fs.unlinkSync(sock);
+        } catch { /* gone */ }
+      }
       for (const f of fs.readdirSync(SESSIONS_DIR)) {
         if (f.startsWith(`${s.pid}.`) && f.endsWith('.key')) {
           try {
@@ -462,7 +530,8 @@ export default function ompClaudeMessenger(pi: Api) {
     return new Promise((resolve, reject) => {
       server = net.createServer(sock => {
         let buf = '';
-        let authed = false;
+        // Windows requires an auth line first. POSIX takes a user frame first and ignores any auth frame.
+        let authed = IS_POSIX;
         const drop = setTimeout(() => sock.destroy(), 30_000);
         sock.on('error', () => {});
         sock.on('close', () => clearTimeout(drop));
@@ -491,7 +560,19 @@ export default function ompClaudeMessenger(pi: Api) {
         });
       });
       server.once('error', reject);
-      server.listen(pipeFull, () => resolve());
+      if (IS_POSIX) {
+        try {
+          fs.unlinkSync(pipeFull); // stale socket from a crashed run
+        } catch { /* none */ }
+      }
+      server.listen(pipeFull, () => {
+        if (IS_POSIX) {
+          try {
+            fs.chmodSync(pipeFull, 0o600);
+          } catch { /* best effort */ }
+        }
+        resolve();
+      });
     });
   }
 
@@ -554,7 +635,14 @@ Message: ${preview}`, [...labels, cancel]);
 
   function deliverToPipe(target: Session, tok: string, content: string): Promise<{ receipts: any[]; closed: boolean }> {
     return new Promise((resolve, reject) => {
-      const s = net.connect(target.messagingSocketPath!);
+      const raw = rawSocketPath(target.messagingSocketPath!);
+      if (IS_POSIX) {
+        // Claude refuses a symlinked target: a link could redirect the message to an endpoint the session did not create.
+        try {
+          if (fs.lstatSync(raw).isSymbolicLink()) return reject(new Error(`refusing symlinked socket ${raw}`));
+        } catch { /* missing: net.connect reports ENOENT */ }
+      }
+      const s = net.connect(raw);
       const receipts: any[] = [];
       let buf = '';
       let done = false;
@@ -570,7 +658,8 @@ Message: ${preview}`, [...labels, cancel]);
       s.on('error', e => fin(receipts.length ? undefined : e));
       s.on('close', () => fin());
       s.on('connect', () => {
-        s.write(line({ type: 'auth', token: tok }) + line({ type: 'user', message: { role: 'user', content } }));
+        // POSIX sends no auth line (optional there); Windows closes a connection without a valid one.
+        s.write((tok ? line({ type: 'auth', token: tok }) : '') + line({ type: 'user', message: { role: 'user', content } }));
       });
       s.on('data', d => {
         buf += d.toString('utf8');
@@ -657,14 +746,15 @@ Message: ${preview}`,
       }
     }
 
-    const tok = readPeerToken(target.pid);
-    if (!tok) throw new Error(`no auth key file for ${label}; the session registry entry is unusable`);
-    const content = wrapEnvelope(regName, mode, p.text);
+    const tok = IS_WIN ? (readPeerToken(target.pid) ?? '') : '';
+    if (IS_WIN && !tok) throw new Error(`no auth key file for ${label}; the session registry entry is unusable`);
+    const content = wrapEnvelope(regName, mode, p.text, IS_POSIX ? `uds:${pipeFull}` : undefined);
     let res: { receipts: any[] };
     try {
       res = await deliverToPipe(target, tok, content);
     } catch (e: any) {
-      throw new Error(`cannot reach ${label}: ${e?.code === 'ENOENT' ? 'its pipe is gone (session restarted or reader died)' : e?.message}`);
+      const gone = e?.code === 'ENOENT' || (IS_POSIX && e?.code === 'ECONNREFUSED');
+      throw new Error(`cannot reach ${label}: ${gone ? 'its pipe is gone (session restarted or reader died)' : e?.message}`);
     }
     const status = res.receipts.filter(r => r.type === 'peer_message_status').pop();
     let verdict: string;
@@ -696,22 +786,30 @@ Message: ${preview}`,
       fs.mkdirSync(SESSIONS_DIR, { recursive: true });
       sweepDead();
       const hex = crypto.randomBytes(16).toString('hex');
-      pipeLocal = `LOCAL\\cc-msg-${hex}`;
-      pipeFull = `\\\\.\\pipe\\${pipeLocal}`;
+      let keyCanonical: string;
+      if (IS_WIN) {
+        pipeLocal = `LOCAL\\cc-msg-${hex}`;
+        pipeFull = `\\\\.\\pipe\\${pipeLocal}`;
+        keyCanonical = `\\\\.\\pipe\\${pipeLocal.toLowerCase()}`;
+      } else {
+        pipeFull = path.join(prepareSocketDir(), `${process.pid}.sock`);
+        pipeLocal = pipeFull;
+        keyCanonical = path.resolve(pipeFull);
+      }
       token = crypto.randomBytes(16).toString('hex');
-      startFt = ownProcStartFiletime();
+      startFt = IS_WIN ? ownProcStartFiletime() : posixProcStart(process.pid);
       const cwd = String(ctx?.cwd ?? process.cwd());
       const base = (path.basename(cwd) || 'omp').toLowerCase().replace(/[^a-z0-9._-]+/g, '-');
       regName = `omp-agent-${base}-${hex.slice(0, 8)}`;
       sessionFile = path.join(SESSIONS_DIR, `${process.pid}.json`);
-      keyFile = path.join(SESSIONS_DIR, keyFileName(process.pid, pipeLocal));
+      keyFile = path.join(SESSIONS_DIR, keyFileName(process.pid, keyCanonical));
       await startServer();
       // key FIRST: a sender that sees the registry entry must already find the token
-      fs.writeFileSync(keyFile, JSON.stringify({ peerToken: token, procStartFt: startFt, pidDomain: `win32:${os.hostname().toLowerCase()}` }));
+      fs.writeFileSync(keyFile, keyBody(), { mode: 0o600 });
       sessionBody = {
         pid: process.pid,
         sessionId: crypto.randomUUID(),
-        cwd: cwd.replace(/\//g, '\\'),
+        cwd: IS_WIN ? cwd.replace(/\//g, '\\') : cwd,
         startedAt: Date.now(),
         procStart: startFt,
         version: 'omp-claude-messenger',
@@ -719,7 +817,7 @@ Message: ${preview}`,
         peerFeatures: [],
         kind: 'interactive',
         entrypoint: 'omp',
-        pidDomain: `win32:${os.hostname().toLowerCase()}`,
+        pidDomain: ownPidDomain(),
         messagingSocketPath: pipeFull,
         name: regName,
         nameSource: 'user',

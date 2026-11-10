@@ -1,16 +1,16 @@
 # omp-claude-messenger
 
-Message live Claude Code sessions from an omp session, and receive their replies. Windows only.
+Message live Claude Code sessions from an omp session, and receive their replies. Windows tested; macOS and Linux implemented but untested against a real Claude session.
 
 omp is an agent harness. This project is a global omp extension: it registers every omp session as a peer on Claude Code's cross-session messaging protocol, so an omp session can list running Claude sessions, send to one, and get the answer back as a normal message.
 
 ## Requirements
 
-- Windows.
+- Windows (tested), or macOS / Linux including WSL 2 (implemented, untested against a real Claude session).
 - omp.
-- Claude Code or Claude Desktop 2.1.234 or newer, with cross-session messaging enabled.
+- Claude Code or Claude Desktop 2.1.234 or newer on Windows, 2.1.224 or newer on macOS and Linux, with cross-session messaging enabled.
 
-Windows is the tested platform. Claude Code also supports cross-session messaging on macOS and Linux, including Linux inside WSL 2, over Unix domain sockets with optional authentication. This extension implements the Windows named-pipe transport only, so it loads inert on other platforms. A POSIX transport is not implemented and is untested.
+Windows is the tested platform. On macOS and Linux, Claude Code uses Unix domain sockets with optional authentication, and the extension speaks that transport. Only the simulated harness `test/posix.mts` passes, on Linux; no real Claude session has been tested on macOS or Linux.
 
 ## Install
 
@@ -28,6 +28,14 @@ Copy the extension and the skill into the omp global directories, then restart e
 ```
 
 An agent can follow `AGENTS.md` for the same steps with checks.
+
+On macOS and Linux, copy by hand:
+
+```sh
+mkdir -p ~/.omp/agent/extensions ~/.agents/skills
+cp extensions/omp-claude-messenger.ts ~/.omp/agent/extensions/
+cp -R skills/omp-claude-messenger ~/.agents/skills/
+```
 
 ## Tools
 
@@ -69,7 +77,7 @@ There is no blocking ask. Send the message and continue. The reply arrives on it
 ## How it works
 
 - On `session_start` the extension registers as a Claude peer. It writes the key file `~/.claude/sessions/<pid>.<hash>.key` first, then `<pid>.json` with name `omp-agent-<cwd>-<hex8>` and `entrypoint: "omp"`. It removes the entries on shutdown and sweeps dead ones from earlier omp runs.
-- The protocol is JSON lines over the named pipe `\.\pipe\LOCAL\cc-msg-<hex32>`.
+- The protocol is JSON lines over the named pipe `\.\pipe\LOCAL\cc-msg-<hex32>` on Windows, and over a Unix socket at `/tmp/cc-socks-<uid>/<pid>.sock` on macOS and Linux.
 - The envelope is `<cross-session-message from=... from-name=... from-mode=...>...</cross-session-message>` with no nested tags.
 - omp's built-in IRC is an in-process singleton for subagents. An extension cannot use it for cross-session messaging, which is why the pipe protocol is spoken directly.
 - Skills bundled through `resources_discover` did not load in rpc mode, hence the install into `~/.agents/skills`.
@@ -79,7 +87,7 @@ There is no blocking ask. Send the message and continue. The reply arrives on it
 
 | Symptom | Cause |
 |---|---|
-| Session missing from `claude_peers` | The Claude session is older than 2.1.234, runs on WSL or macOS, or is closed. |
+| Session missing from `claude_peers` | The Claude session is older than 2.1.234 on Windows or 2.1.224 on macOS and Linux, or is closed. |
 | Sent but never appears | Mode mismatch, or the target waits on an approval. Check the mode column. Do not resend. |
 | Claude cannot reach omp | `~/.claude/sessions` has no `omp-agent-*` entry. Restart omp. |
 | A send to an old pid fails | Desktop restarted. Retry with the stored title. |
@@ -90,6 +98,8 @@ There is no blocking ask. Send the message and continue. The reply arrives on it
 
 `test/live.mjs` and `test/live2.mjs` drive a real omp in rpc mode against a live Claude session. They read `policy.txt` or `policy2.txt` and `cmd.jsonl` or `cmd2.jsonl` from the scratch directory, and write `O.out`, `O.err`, `ui.log` there.
 
+`test/posix.mts` exercises the Unix-socket path: registry entry, socket and key file, inbound with and without an auth frame, outbound to a fake Claude, symlink refusal, and socket cleanup on shutdown. It needs a real Linux or macOS host, because Node on Windows cannot bind an AF_UNIX socket. It proves the transport, not compatibility with a real Claude session.
+
 Environment:
 
 | Variable | Default | Meaning |
@@ -97,6 +107,8 @@ Environment:
 | `OMP_EXE` | `omp` | Path to the omp executable. |
 | `OMP_TEST_MODEL` | unset | Model for the rpc session. |
 | `OMP_TEST_SCRATCH` | `wo` / `wp` | Scratch directory for the live harnesses. |
+| `OMP_CLAUDE_PLATFORM` | `process.platform` | Forces `win32`, `linux` or `darwin` for the harnesses. |
+| `OMP_CLAUDE_SOCKET_DIR` | `/tmp/cc-socks-<uid>` | Socket directory for the POSIX harness. |
 
 ## License
 

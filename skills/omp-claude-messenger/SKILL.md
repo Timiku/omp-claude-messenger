@@ -1,13 +1,13 @@
 ---
 name: omp-claude-messenger
-description: Message live Claude Code sessions from omp and receive their messages, using the omp-claude-messenger extension (tools claude_peers, claude_send). Use when the user asks to hand off to, ask, or reply to a Claude Code / Claude Desktop session from omp. Windows only.
+description: Message live Claude Code sessions from omp and receive their messages, using the omp-claude-messenger extension (tools claude_peers, claude_send). Use when the user asks to hand off to, ask, or reply to a Claude Code / Claude Desktop session from omp. Windows tested; macOS and Linux untested.
 ---
 
 # omp-claude-messenger
 
 Talk to running Claude Code sessions (Claude Desktop / CLI) from omp. This is an omp extension, not a script: it needs no background task, no Python and no armed watcher.
 
-**Windows only.** It speaks Claude Code's Windows cross-session protocol (named pipe `\.\pipe\LOCAL\cc-msg-<hex32>`). The extension is installed globally at `~/.omp/agent/extensions/omp-claude-messenger.ts` and loads in every omp session.
+**Windows tested; macOS and Linux untested.** On Windows it speaks Claude Code's named-pipe protocol (`\.\pipe\LOCAL\cc-msg-<hex32>`); on macOS and Linux it uses a Unix socket at `/tmp/cc-socks-<uid>/<pid>.sock`. The extension is installed globally at `~/.omp/agent/extensions/omp-claude-messenger.ts` and loads in every omp session.
 
 This extension covers omp to Claude messaging only.
 
@@ -52,6 +52,6 @@ Replies come back as ordinary messages from the Claude session (custom message t
 
 ## Troubleshooting
 
-- Not in `claude_peers`: the Claude session may be older than 2.1.234, on WSL/macOS, or closed.
+- Not in `claude_peers`: the Claude session may be older than 2.1.234 on Windows or 2.1.224 on macOS and Linux, or closed.
 - Sent but never appears: mode mismatch (check `claude_peers` mode column), or the target is waiting on an approval. Do not resend.
 - Claude cannot reach omp: check `~/.claude/sessions` for the `omp-agent-*` entry; restart omp if missing.
